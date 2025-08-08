@@ -1,0 +1,48 @@
+blueprint:
+  name: Paralelo Virtual (rápido)
+  description: Acende/Apaga todos os switches/lights do grupo simultaneamente, sem atraso e sem loop.
+  domain: automation
+  input:
+    entrada_switchs:
+      name: Escolha os pontos de Iluminação
+      selector:
+        entity:
+          domain:
+            - switch
+            - light
+          multiple: true
+
+mode: restart
+max_exceeded: silent
+
+trigger:
+  - platform: state
+    entity_id: !input entrada_switchs
+    to:
+      - 'on'
+      - 'off'
+
+# evita reações em cadeia quando a própria automação mudou o estado
+condition:
+  - condition: template
+    value_template: >
+      {{ trigger.to_state.context.id != this.context.id
+         and trigger.to_state.state != trigger.from_state.state }}
+
+variables:
+  entidades: !input entrada_switchs
+  outros: >
+    {{ entidades | reject('equalto', trigger.entity_id) | list }}
+
+action:
+  - choose:
+      - conditions: "{{ trigger.to_state.state == 'on' }}"
+        sequence:
+          - service: homeassistant.turn_on
+            target:
+              entity_id: "{{ outros }}"
+      - conditions: "{{ trigger.to_state.state == 'off' }}"
+        sequence:
+          - service: homeassistant.turn_off
+            target:
+              entity_id: "{{ outros }}"
