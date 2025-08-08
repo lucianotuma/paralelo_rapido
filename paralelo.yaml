@@ -31,27 +31,23 @@ max_exceeded: silent
 trigger:
   - platform: state
     entity_id: !input entrada_switchs
-    to:
-      - 'on'
-      - 'off'
-    # Ignora mudanças de atributos, apenas estado
-    not_from:
-      - unavailable
-      - unknown
-    not_to:
-      - unavailable
-      - unknown
+    # Remove especificação de 'to' para capturar todas as mudanças
 
 condition:
   # Condições combinadas para máxima eficiência
   - condition: and
     conditions:
+      # Filtra apenas mudanças para on/off (ignora unavailable, unknown, etc)
+      - condition: template
+        value_template: >
+          {{ trigger.to_state.state in ['on', 'off'] and
+             trigger.from_state.state in ['on', 'off', 'unavailable', 'unknown', none] }}
+      
       # Evita loops - verifica se não foi a própria automação
       - condition: template
         value_template: >
           {{ trigger.to_state.context.id != this.context.id
-             and trigger.to_state.context.parent_id != this.context.id
-             and trigger.to_state.context.user_id != this.context.user_id }}
+             and trigger.to_state.context.parent_id != this.context.id }}
       
       # Garante mudança real de estado
       - condition: template
@@ -62,7 +58,7 @@ condition:
       - condition: template
         value_template: >
           {% set last_triggered = state_attr(this.entity_id, 'last_triggered') %}
-          {% set delay = states('input_number.delay_ms') | default(50) | int %}
+          {% set delay = delay_ms | default(50) | int %}
           {{ last_triggered is none or 
              (now() - last_triggered).total_seconds() * 1000 > delay }}
 
@@ -77,15 +73,23 @@ variables:
 
 action:
   # Delay mínimo opcional para proteção extra
-  - condition: template
-    value_template: "{{ delay_ms | int > 0 }}"
-  - delay:
-      milliseconds: "{{ delay_ms | int }}"
+  - choose:
+      - conditions: "{{ delay_ms | int > 0 }}"
+        sequence:
+          - delay:
+              milliseconds: "{{ delay_ms | int }}"
+    default: []
   
   # Execução direta sem choose para máxima velocidade
   - service: "homeassistant.turn_{{ estado_alvo }}"
     data:
-      # Força execução mesmo se já estiver no estado desejado
       entity_id: "{{ outros }}"
     continue_on_error: true
   
+  # Log opcional para debug (remover em produção)
+  # - service: system_log.write
+  #   data:
+  #     message: >
+  #       Paralelo Virtual: {{ trigger.entity_id }} -> {{ estado_alvo }}
+  #       Sincronizando: {{ outros | length }} dispositivos
+  #     level: debug
