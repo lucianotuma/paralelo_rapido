@@ -31,18 +31,14 @@ max_exceeded: silent
 trigger:
   - platform: state
     entity_id: !input entrada_switchs
-    # Remove especificação de 'to' para capturar todas as mudanças
+    to:
+      - 'on'
+      - 'off'
 
 condition:
   # Condições combinadas para máxima eficiência
   - condition: and
     conditions:
-      # Filtra apenas mudanças para on/off (ignora unavailable, unknown, etc)
-      - condition: template
-        value_template: >
-          {{ trigger.to_state.state in ['on', 'off'] and
-             trigger.from_state.state in ['on', 'off', 'unavailable', 'unknown', none] }}
-      
       # Evita loops - verifica se não foi a própria automação
       - condition: template
         value_template: >
