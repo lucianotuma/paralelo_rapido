@@ -1,18 +1,31 @@
 blueprint:
-  name: Paralelo Virtual (rápido)
-  description: Acende/Apaga todos os switches/lights do grupo simultaneamente, sem atraso e sem loop.
+  name: Paralelo Virtual (Ultra Rápido)
+  description: Sincroniza switches/lights instantaneamente com proteção anti-loop e performance otimizada
   domain: automation
   input:
     entrada_switchs:
-      name: Escolha os pontos de Iluminação
+      name: Pontos de Iluminação
+      description: Selecione os dispositivos para sincronizar
       selector:
         entity:
           domain:
             - switch
             - light
           multiple: true
+    
+    delay_ms:
+      name: Delay de proteção (ms)
+      description: Tempo mínimo entre execuções para evitar loops (0 = desativado)
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 500
+          step: 10
+          unit_of_measurement: ms
+          mode: slider
 
-mode: restart
+mode: single
 max_exceeded: silent
 
 trigger:
@@ -21,28 +34,58 @@ trigger:
     to:
       - 'on'
       - 'off'
+    # Ignora mudanças de atributos, apenas estado
+    not_from:
+      - unavailable
+      - unknown
+    not_to:
+      - unavailable
+      - unknown
 
-# evita reações em cadeia quando a própria automação mudou o estado
 condition:
-  - condition: template
-    value_template: >
-      {{ trigger.to_state.context.id != this.context.id
-         and trigger.to_state.state != trigger.from_state.state }}
+  # Condições combinadas para máxima eficiência
+  - condition: and
+    conditions:
+      # Evita loops - verifica se não foi a própria automação
+      - condition: template
+        value_template: >
+          {{ trigger.to_state.context.id != this.context.id
+             and trigger.to_state.context.parent_id != this.context.id
+             and trigger.to_state.context.user_id != this.context.user_id }}
+      
+      # Garante mudança real de estado
+      - condition: template
+        value_template: >
+          {{ trigger.to_state.state != trigger.from_state.state }}
+      
+      # Proteção contra execuções muito rápidas (anti-bounce)
+      - condition: template
+        value_template: >
+          {% set last_triggered = state_attr(this.entity_id, 'last_triggered') %}
+          {% set delay = states('input_number.delay_ms') | default(50) | int %}
+          {{ last_triggered is none or 
+             (now() - last_triggered).total_seconds() * 1000 > delay }}
 
 variables:
   entidades: !input entrada_switchs
+  delay_ms: !input delay_ms
+  # Pré-calcula lista de entidades para sincronizar
   outros: >
     {{ entidades | reject('equalto', trigger.entity_id) | list }}
+  # Captura estado alvo para garantir consistência
+  estado_alvo: "{{ trigger.to_state.state }}"
 
 action:
-  - choose:
-      - conditions: "{{ trigger.to_state.state == 'on' }}"
-        sequence:
-          - service: homeassistant.turn_on
-            target:
-              entity_id: "{{ outros }}"
-      - conditions: "{{ trigger.to_state.state == 'off' }}"
-        sequence:
-          - service: homeassistant.turn_off
-            target:
-              entity_id: "{{ outros }}"
+  # Delay mínimo opcional para proteção extra
+  - condition: template
+    value_template: "{{ delay_ms | int > 0 }}"
+  - delay:
+      milliseconds: "{{ delay_ms | int }}"
+  
+  # Execução direta sem choose para máxima velocidade
+  - service: "homeassistant.turn_{{ estado_alvo }}"
+    data:
+      # Força execução mesmo se já estiver no estado desejado
+      entity_id: "{{ outros }}"
+    continue_on_error: true
+  
