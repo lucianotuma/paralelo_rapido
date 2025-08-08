@@ -12,20 +12,8 @@ blueprint:
             - switch
             - light
           multiple: true
-    
-    delay_ms:
-      name: Delay de proteção (ms)
-      description: Tempo mínimo entre execuções para evitar loops (0 = desativado)
-      default: 50
-      selector:
-        number:
-          min: 0
-          max: 500
-          step: 10
-          unit_of_measurement: ms
-          mode: slider
 
-mode: single
+mode: restart
 max_exceeded: silent
 
 trigger:
@@ -36,56 +24,30 @@ trigger:
       - 'off'
 
 condition:
-  # Condições combinadas para máxima eficiência
-  - condition: and
-    conditions:
-      # Evita loops - verifica se não foi a própria automação
-      - condition: template
-        value_template: >
-          {{ trigger.to_state.context.id != this.context.id
-             and trigger.to_state.context.parent_id != this.context.id }}
-      
-      # Garante mudança real de estado
-      - condition: template
-        value_template: >
-          {{ trigger.to_state.state != trigger.from_state.state }}
-      
-      # Proteção contra execuções muito rápidas (anti-bounce)
-      - condition: template
-        value_template: >
-          {% set last_triggered = state_attr(this.entity_id, 'last_triggered') %}
-          {% set delay = delay_ms | default(50) | int %}
-          {{ last_triggered is none or 
-             (now() - last_triggered).total_seconds() * 1000 > delay }}
+  # Condição simplificada - apenas evita loop direto
+  - condition: template
+    value_template: >
+      {{ trigger.to_state.context.id != this.context.id
+         and trigger.to_state.state != trigger.from_state.state }}
 
 variables:
   entidades: !input entrada_switchs
-  delay_ms: !input delay_ms
-  # Pré-calcula lista de entidades para sincronizar
+  # Lista otimizada de entidades para sincronizar
   outros: >
     {{ entidades | reject('equalto', trigger.entity_id) | list }}
-  # Captura estado alvo para garantir consistência
-  estado_alvo: "{{ trigger.to_state.state }}"
+  # Estado alvo capturado
+  novo_estado: "{{ trigger.to_state.state }}"
 
 action:
-  # Delay mínimo opcional para proteção extra
-  - choose:
-      - conditions: "{{ delay_ms | int > 0 }}"
-        sequence:
-          - delay:
-              milliseconds: "{{ delay_ms | int }}"
-    default: []
-  
-  # Execução direta sem choose para máxima velocidade
-  - service: "homeassistant.turn_{{ estado_alvo }}"
-    data:
-      entity_id: "{{ outros }}"
-    continue_on_error: true
-  
-  # Log opcional para debug (remover em produção)
-  # - service: system_log.write
-  #   data:
-  #     message: >
-  #       Paralelo Virtual: {{ trigger.entity_id }} -> {{ estado_alvo }}
-  #       Sincronizando: {{ outros | length }} dispositivos
-  #     level: debug
+  # Execução paralela para máxima velocidade
+  - parallel:
+      - service: "homeassistant.turn_{{ novo_estado }}"
+        target:
+          entity_id: "{{ outros }}"
+        continue_on_error: true
+      
+      # Força atualização de estado se necessário
+      - service: homeassistant.update_entity
+        target:
+          entity_id: "{{ outros }}"
+        continue_on_error: true
