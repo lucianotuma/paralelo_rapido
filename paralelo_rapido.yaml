@@ -1,11 +1,13 @@
 blueprint:
-  name: Paralelo Virtual (Ultra Rápido)
-  description: Sincroniza switches/lights instantaneamente com proteção anti-loop e performance otimizada
+  name: Paralelo Virtual (Ultra Rápido – Zigbee & Matter)
+  description: >
+    Sincroniza instantaneamente pontos de iluminação (switch/light), com proteção anti-loop,
+    chamadas por domínio (rápidas) e só altera quem está diferente.
   domain: automation
   input:
     entrada_switchs:
       name: Pontos de Iluminação
-      description: Selecione os dispositivos para sincronizar
+      description: Selecione todos os switches/lights que devem espelhar estado entre si
       selector:
         entity:
           domain:
@@ -13,41 +15,70 @@ blueprint:
             - light
           multiple: true
 
-mode: restart
+# Evita cancelamentos quando dois pontos mudam quase juntos
+mode: parallel
 max_exceeded: silent
+max: 20
 
 trigger:
   - platform: state
     entity_id: !input entrada_switchs
-    to:
-      - 'on'
-      - 'off'
+    to: ["on", "off"]
 
 condition:
-  # Condição simplificada - apenas evita loop direto
+  # 1) Mudou de fato e 2) não é eco da própria ação desta automação
   - condition: template
     value_template: >
-      {{ trigger.to_state.context.id != this.context.id
-         and trigger.to_state.state != trigger.from_state.state }}
+      {{ trigger.to_state.state != trigger.from_state.state
+         and trigger.to_state.context.id != this.context.id }}
 
 variables:
   entidades: !input entrada_switchs
-  # Lista otimizada de entidades para sincronizar
-  outros: >
-    {{ entidades | reject('equalto', trigger.entity_id) | list }}
-  # Estado alvo capturado
   novo_estado: "{{ trigger.to_state.state }}"
+  # Lista expandida com objetos de estado
+  todas: "{{ expand(entidades) }}"
+  # Filtra apenas quem é diferente do alvo e não é o próprio gatilho
+  alvo_lights: >
+    {{ todas
+       | rejectattr('entity_id','eq', trigger.entity_id)
+       | selectattr('domain','eq','light')
+       | selectattr('state','!=', novo_estado)
+       | map(attribute='entity_id') | list }}
+  alvo_switches: >
+    {{ todas
+       | rejectattr('entity_id','eq', trigger.entity_id)
+       | selectattr('domain','eq','switch')
+       | selectattr('state','!=', novo_estado)
+       | map(attribute='entity_id') | list }}
 
 action:
-  # Execução paralela para máxima velocidade
-  - parallel:
-      - service: "homeassistant.turn_{{ novo_estado }}"
-        target:
-          entity_id: "{{ outros }}"
-        continue_on_error: true
-      
-      # Força atualização de estado se necessário
-      - service: homeassistant.update_entity
-        target:
-          entity_id: "{{ outros }}"
-        continue_on_error: true
+  - choose:
+      - conditions: "{{ novo_estado == 'on' }}"
+        sequence:
+          # Luzes: transição zero deixa o efeito "clac" mais seco/rápido
+          - if: "{{ alvo_lights | length > 0 }}"
+            then:
+              - service: light.turn_on
+                target:
+                  entity_id: "{{ alvo_lights }}"
+                data:
+                  transition: 0
+          - if: "{{ alvo_switches | length > 0 }}"
+            then:
+              - service: switch.turn_on
+                target:
+                  entity_id: "{{ alvo_switches }}"
+      - conditions: "{{ novo_estado == 'off' }}"
+        sequence:
+          - if: "{{ alvo_lights | length > 0 }}"
+            then:
+              - service: light.turn_off
+                target:
+                  entity_id: "{{ alvo_lights }}"
+                data:
+                  transition: 0
+          - if: "{{ alvo_switches | length > 0 }}"
+            then:
+              - service: switch.turn_off
+                target:
+                  entity_id: "{{ alvo_switches }}"
